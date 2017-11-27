@@ -1,10 +1,12 @@
 #pragma once
 
+#include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 using namespace std;
 
@@ -26,49 +28,53 @@ typedef vector<TopicInterfacePtr> V_TopicInterfacePtr;
 
 template <class T> class TopicAdapter : public TopicInterface {
 public:
-  boost::signals2::signal<void(T)> *sigTopic;
+  shared_ptr<boost::signals2::signal<void(T)>> sigTopic;
   TopicAdapter(string str) {
-    sigTopic = new boost::signals2::signal<void(T)>();
+    sigTopic = make_shared<boost::signals2::signal<void(T)>>();
     topic = str;
   }
 };
 
-extern vector<TopicInterfacePtr> g_arrTopic;
+class ThreadArray {
+public:
+  ThreadArray() {}
+  ThreadArray &operator=(ThreadArray &) = delete;
 
-// new topic
-template <class T> void Insert(string topic) {
-  TopicInterfacePtr topicAdapter =
-      shared_ptr<TopicInterface>(new TopicAdapter<T>(topic));
-  g_arrTopic.push_back(topicAdapter);
-}
+  template <class T>
+  shared_ptr<boost::signals2::signal<void(T)>> Get(string strTopic) {
+    std::lock_guard<std::mutex> lg(mut);
+    TopicInterfacePtr topicAdapter;
 
-
-template <class T> boost::signals2::signal<void(T)> *Get(string strTopic) {
-  for (auto &topic : g_arrTopic) {
-    auto ret = static_cast<TopicAdapter<T> *>(topic.get());
-    if (ret && ret->topic == strTopic) {
-      return ret->sigTopic;
+    const bool is_in = mapTopic.find(strTopic) != mapTopic.end();
+    if (is_in) {
+      topicAdapter = mapTopic[strTopic];
+    } else {
+      topicAdapter = shared_ptr<TopicInterface>(new TopicAdapter<T>(strTopic));
+      mapTopic[strTopic] = topicAdapter;
     }
+
+    auto ret = static_cast<TopicAdapter<T> *>(topicAdapter.get());
+
+    return ret->sigTopic;
   }
-  return nullptr;
-}
+
+private:
+  std::mutex mut;
+  map<string, TopicInterfacePtr> mapTopic;
+};
+
+extern ThreadArray g_ta;
 
 extern vector<thread> arrThread;
 
 template <class T> void subscribe(string topic, std::function<void(T)> func) {
   typedef ConcurrentQueue<T> Queue;
 
-  boost::signals2::signal<void(T)> *sig = Get<T>(topic);
-
-  if (sig == nullptr) {
-    Insert<T>(topic);
-    sig = Get<T>(topic);
-    assert(sig != nullptr);
-  }
+  shared_ptr<boost::signals2::signal<void(T)>> sig = g_ta.Get<T>(topic);
 
   auto q_new = make_shared<Queue>(100);
   sig->connect([q_new](T t) {
-    //todos: if queue full, remove top items
+    // todos: if queue full, remove top items
     q_new->try_enqueue(t);
   });
   arrThread.push_back(thread([q_new, func]() {
@@ -78,7 +84,7 @@ template <class T> void subscribe(string topic, std::function<void(T)> func) {
       if (ret) {
         func(t);
       } else {
-        this_thread::sleep_for(chrono::microseconds(1));
+        this_thread::sleep_for(chrono::milliseconds(1));
       }
     }
   }));
@@ -90,6 +96,8 @@ template <class T> void subscribe(string topic, void (*fp)(T)) {
 }
 
 template <class T> void publish(string topic, T t) {
-  boost::signals2::signal<void(T)> *sig = Get<T>(topic);
-  (*sig)(t);
+  shared_ptr<boost::signals2::signal<void(T)>> sig = g_ta.Get<T>(topic);
+  if (sig) {
+    (*sig)(t);
+  }
 }
