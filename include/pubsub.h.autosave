@@ -96,9 +96,7 @@ template <class T> void subscribe(string topic, void (*fp)(T)) {
 }
 
 template <class C, class T>
-// void subscribe(string topic, C *cls, void (C::*method)(T)) {
 void subscribe(string topic, C *cls, void (C::*method)(T)) {
-
   std::function<void(T)> f = [=](T t) { (cls->*method)(t); };
   subscribe<T>(topic, f);
 }
